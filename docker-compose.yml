@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  videodl-backend:
+    build: .
+    container_name: videodl-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DOWNLOAD_DIR=/downloads
+      - MAX_FILE_AGE_SECONDS=3600
+      - MAX_CONCURRENT=3
+    volumes:
+      - ./downloads:/downloads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
