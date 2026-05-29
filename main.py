@@ -71,6 +71,30 @@ def check_rate_limit(request: Request):
     _rate_store[ip].append(now)
 
 # ---------------------------------------------------------------------------
+# Platform allow-list — block services that prohibit third-party downloading
+# to comply with Google Play policy and each platform's Terms of Service.
+# ---------------------------------------------------------------------------
+_BLOCKED_DOMAINS = {
+    "youtube.com", "youtu.be",
+    "instagram.com",
+    "tiktok.com",
+    "facebook.com", "fb.watch", "fb.com",
+    "twitter.com", "x.com",
+    "snapchat.com",
+    "linkedin.com",
+    "pinterest.com",
+    "whatsapp.com",
+}
+
+def _is_blocked_url(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower().lstrip("www.")
+        return any(host == d or host.endswith("." + d) for d in _BLOCKED_DOMAINS)
+    except Exception:
+        return False
+
+# ---------------------------------------------------------------------------
 # API-key auth
 # ---------------------------------------------------------------------------
 def check_api_key(request: Request):
@@ -199,8 +223,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
+# CORS: restrict to Railway production domain in prod; allow all only for local dev.
+# Set ALLOWED_ORIGINS env var to a comma-separated list of allowed origins in production.
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "")
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+
+app.add_middleware(CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-API-Key"],
+    allow_credentials=False,
+)
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -258,6 +291,10 @@ def health():
 
 @app.post("/info", response_model=VideoInfo)
 def get_info(req: InfoRequest, _=Depends(auth_deps)):
+    if _is_blocked_url(req.url):
+        raise HTTPException(403,
+            "This platform does not permit third-party downloading. "
+            "Use open/licensed platforms like Vimeo, Dailymotion, Rumble, or Odysee.")
     try:
         if req.extract_playlist:
             return _extract_playlist_info(req.url)
@@ -346,6 +383,9 @@ def _extract_playlist_info(url: str) -> VideoInfo:
 @app.post("/download/start")
 async def start_download(req: DownloadRequest, bg: BackgroundTasks,
                          _=Depends(auth_deps)):
+    if _is_blocked_url(req.url):
+        raise HTTPException(403,
+            "This platform does not permit third-party downloading.")
     active = sum(1 for j in jobs.values() if j.status == "downloading")
     if active >= MAX_CONCURRENT:
         raise HTTPException(429, f"Max {MAX_CONCURRENT} concurrent downloads. Retry shortly.")
